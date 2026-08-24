@@ -1753,6 +1753,20 @@ func (t *gdbThread) reloadRegisters(regs map[uint64]uint64) error {
 		}
 	}
 
+	if t.p.bi.GOOS == "windows" {
+		// If the stub exposes the TLS base as a gs_base register, use it
+		// directly: on Windows amd64 gs_base is the TEB, which is exactly
+		// what the loadGInstr MOV would read via gs:[off]. This matters for
+		// read-only backends (e.g. replay) where the instruction-injection
+		// path (reloadGAtPC/reloadGAlloc) cannot work.
+		if reg, hasGsBase := t.regs.regs["gs_base"]; hasGsBase {
+			t.regs.gaddr = 0
+			t.regs.tls = binary.LittleEndian.Uint64(reg.value)
+			t.regs.hasgaddr = false
+			return nil
+		}
+	}
+
 	if t.p.bi.Arch.Name == "arm64" {
 		// no need to play around with the GInstr on ARM64 because
 		// the G addr is stored in a register

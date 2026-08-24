@@ -208,6 +208,16 @@ func New(config *Config, processArgs []string) (*Debugger, error) {
 		case "rr":
 			d.log.Infof("opening trace %s", d.config.CoreFile)
 			d.target, err = gdbserial.Replay(d.config.CoreFile, false, d.config.RrDelOnDetach, d.config.DebugInfoDirectories, d.config.RrOnProcessPid, "")
+		case "ttd-gdbserver":
+			d.log.Infof("opening TTD trace %s via ttd-gdbserver", d.config.CoreFile)
+			// The executable defaults to the stub's qXfer:exec-file report
+			// (the trace's first module, like 'replay' for rr); a caller that
+			// passes one explicitly (dlv ttd-gdbserver <trace> <exe>) wins.
+			exe := ""
+			if len(d.processArgs) > 0 {
+				exe = d.processArgs[0]
+			}
+			d.target, err = gdbserial.TtdGdbserverReplay(d.config.CoreFile, false, d.config.DebugInfoDirectories, "", exe)
 		default:
 			d.log.Infof("opening core file %s (executable %s)", d.config.CoreFile, d.processArgs[0])
 			d.target, err = core.OpenCore(d.config.CoreFile, d.processArgs[0], d.config.DebugInfoDirectories)
@@ -333,6 +343,12 @@ func (d *Debugger) Launch(processArgs []string, wd string) (*proc.TargetGroup, e
 		}()
 		return nil, nil
 
+	case "ttd-gdbserver":
+		// With rr this launch path records the program under 'rr record'
+		// and then replays the fresh trace. ttd-gdbserver has no recorder
+		// (recording is done by the separate TTD recorder, ttd.exe), so
+		// exec/test/debug requests are rejected — only trace replay works.
+		return nil, fmt.Errorf(`the ttd-gdbserver backend can only replay traces; record one with the TTD recorder (ttd.exe) first, then open it with 'dlv ttd-gdbserver <trace>'`)
 	case "default":
 		if runtime.GOOS == "darwin" {
 			return betterGdbserialLaunchError(gdbserial.LLDBLaunch(processArgs, wd, launchFlags, d.config.DebugInfoDirectories, d.config.TTY, [3]string{d.config.Stdin, d.config.Stdout.Path, d.config.Stderr.Path}))
@@ -377,6 +393,8 @@ func (d *Debugger) Attach(pid int, path string, waitFor *proc.WaitFor) (*proc.Ta
 		return native.Attach(pid, waitFor, d.config.DebugInfoDirectories)
 	case "lldb":
 		return betterGdbserialLaunchError(gdbserial.LLDBAttach(pid, path, waitFor, d.config.DebugInfoDirectories))
+	case "ttd-gdbserver":
+		return nil, fmt.Errorf(`the ttd-gdbserver backend cannot attach to live processes; use 'dlv ttd-gdbserver <trace>' to replay a recorded trace`)
 	case "default":
 		if runtime.GOOS == "darwin" {
 			return betterGdbserialLaunchError(gdbserial.LLDBAttach(pid, path, waitFor, d.config.DebugInfoDirectories))

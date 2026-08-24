@@ -490,6 +490,25 @@ func (s *Session) setLaunchAttachArgs(args LaunchAttachCommonConfig) {
 	}
 }
 
+// backendSupportsStepBack reports whether the debuggee is a recorded,
+// reversible target so the client can enable its reverse-continue /
+// reverse-step controls. Decided from the target itself (Recorded) rather
+// than the backend name, so any recorded backend (rr, ttd-gdbserver) gets
+// the same treatment automatically. The backend-name fallback covers calls
+// that arrive before the debugger exists.
+func (s *Session) backendSupportsStepBack() bool {
+	if s.debugger != nil {
+		if recorded, _ := s.debugger.Recorded(); recorded {
+			return true
+		}
+	}
+	switch s.config.Debugger.Backend {
+	case "rr", "ttd-gdbserver":
+		return true
+	}
+	return false
+}
+
 // Stop stops the DAP debugger service, closes the listener and the client
 // connection. It shuts down the underlying debugger and kills the target
 // process if it was launched by it or stops the noDebug process.
@@ -1089,7 +1108,9 @@ func (s *Session) onLaunchRequest(request *dap.LaunchRequest) {
 		return
 	}
 
-	if args.Program == "" && args.Mode != "replay" { // Only fail on modes requiring a program
+	// Only fail on modes requiring a program (replay/ttd-gdbserver get the
+	// executable from the trace stub).
+	if args.Program == "" && args.Mode != "replay" && args.Mode != "ttd-gdbserver" {
 		s.sendShowUserErrorResponse(request.Request, FailedToLaunch, "Failed to launch",
 			"The program attribute is missing in debug configuration.")
 		return
@@ -1112,6 +1133,22 @@ func (s *Session) onLaunchRequest(request *dap.LaunchRequest) {
 		// Assign the rr trace directory path to debugger configuration
 		s.config.Debugger.CoreFile = args.TraceDirPath
 		args.Backend = "rr"
+	}
+	if args.Mode == "ttd-gdbserver" {
+		// Validate trace file
+		if args.TtdTracePath == "" {
+			s.sendShowUserErrorResponse(request.Request, FailedToLaunch, "Failed to launch",
+				"The 'ttdTracePath' attribute is missing in debug configuration.")
+			return
+		}
+
+		// Assign the TTD trace file path to debugger configuration; the
+		// executable is requested from the stub (qXfer:exec-file) unless a
+		// 'program' attribute is present (useful when the recorded binary is
+		// no longer at its original path, or when debugging on a machine
+		// other than the one that recorded the trace).
+		s.config.Debugger.CoreFile = args.TtdTracePath
+		args.Backend = "ttd-gdbserver"
 	}
 	if args.Mode == "core" {
 		// Validate core dump path
@@ -1198,7 +1235,13 @@ func (s *Session) onLaunchRequest(request *dap.LaunchRequest) {
 		s.binaryToRemove = args.Output
 		s.mu.Unlock()
 	}
-	s.config.ProcessArgs = append([]string{debugbinary}, args.Args...)
+	// Replay-only modes without a program must not grow an empty
+	// executable argument here. When a program IS supplied for ttd-gdbserver
+	// it lands in ProcessArgs[0] and is passed to TtdGdbserverReplay as the
+	// explicit executable (overriding the stub's qXfer:exec-file report).
+	if debugbinary != "" || (args.Mode != "replay" && args.Mode != "ttd-gdbserver") {
+		s.config.ProcessArgs = append([]string{debugbinary}, args.Args...)
+	}
 
 	s.setLaunchAttachArgs(args.LaunchAttachCommonConfig)
 
@@ -1369,7 +1412,7 @@ func (s *Session) onLaunchRequest(request *dap.LaunchRequest) {
 		return
 	}
 	// Enable StepBack controls on supported backends
-	if s.config.Debugger.Backend == "rr" {
+	if s.backendSupportsStepBack() {
 		s.send(&dap.CapabilitiesEvent{Event: *s.newEvent("capabilities"), Body: dap.CapabilitiesEventBody{Capabilities: dap.Capabilities{SupportsStepBack: true}}})
 	}
 
@@ -2395,7 +2438,7 @@ func (s *Session) onAttachRequest(request *dap.AttachRequest) {
 			return
 		}
 		// Enable StepBack controls on supported backends
-		if s.config.Debugger.Backend == "rr" {
+		if s.backendSupportsStepBack() {
 			s.send(&dap.CapabilitiesEvent{Event: *s.newEvent("capabilities"), Body: dap.CapabilitiesEventBody{Capabilities: dap.Capabilities{SupportsStepBack: true}}})
 		}
 		// Customize termination options for debugger and debuggee

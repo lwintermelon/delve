@@ -628,6 +628,10 @@ func (conn *gdbConn) step(th *gdbThread, tu *threadUpdater, ignoreFaultSignal bo
 		_SIGBUS = 0x7
 	case "darwin":
 		_SIGBUS = 0xa
+	case "windows":
+		// Windows has no SIGBUS. Use a value that cannot collide with the
+		// real stop signals so the comparison below is simply never true.
+		_SIGBUS = 0x7
 	default:
 		panic(fmt.Errorf("unknown GOOS %s", conn.goos))
 	}
